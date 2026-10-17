@@ -207,28 +207,37 @@ class OKButton(discord.ui.Button):
             upsert=True,
         )
 
-        # DM the presser with phone + OTP button
-        try:
-            dm = await interaction.user.create_dm()
-            await dm.send(view=ClaimedView(u, cfg))
-        except discord.Forbidden:
-            # rollback the claim so someone else can try
-            await db.users.update_one({"id": user_id}, {"$set": {"discord_presser_id": None}})
-            await interaction.response.send_message("⚠️ I can't DM you. Enable DMs from server members. Claim released.", ephemeral=True)
-            return
-
-        # log
+# log
         await log_action(f"✅ <@{interaction.user.id}> pressed **OK** for `{u['nickname']}`")
-        # acknowledge & edit original message
+
+        # 1) edit the original message (this uses the interaction response)
         try:
             new_view = NumberView(u, cfg, claimed_by=f"<@{interaction.user.id}>")
             await interaction.response.edit_message(view=new_view)
         except Exception as e:
             log.warning(f"edit_message failed: {e}")
-            try:
-                await interaction.response.send_message("Number claimed.", ephemeral=True)
-            except Exception:
-                pass
+            # rollback the claim so someone else can try
+            await db.users.update_one({"id": user_id}, {"$set": {"discord_presser_id": None}})
+            return
+
+        # 2) send phone + OTP button as an ephemeral embed (only the presser sees it)
+        embed = discord.Embed(
+            title="📱 Number claimed",
+            description=f"You claimed **{u['nickname']}**.",
+            color=discord.Color.green(),
+        )
+        embed.add_field(name="Phone", value=f"`{u.get('phone', 'N/A')}`", inline=False)
+        embed.set_footer(text="Click the button below to request the OTP.")
+
+        try:
+            await interaction.followup.send(
+                embed=embed,
+                view=ClaimedView(u, cfg),
+                ephemeral=True,
+            )
+        except Exception as e:
+            log.warning(f"followup send failed: {e}")
+
         # refresh leaderboard
         asyncio.create_task(refresh_leaderboard())
 
